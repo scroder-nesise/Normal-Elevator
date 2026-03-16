@@ -1,0 +1,943 @@
+-- ============================================================
+--   Normal Elevator GUI Script
+--   Game: The Normal Elevator (by NowDoTheHarlemShake)
+--   Version: 1.0.0
+-- ============================================================
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local Character   = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid    = Character:WaitForChild("Humanoid")
+local RootPart    = Character:WaitForChild("HumanoidRootPart")
+
+-- ============================================================
+-- CLEANUP SYSTEM
+-- ============================================================
+local Connections = {}
+
+local function AddConnection(conn)
+    table.insert(Connections, conn)
+end
+
+local function KillScript()
+    for _, c in ipairs(Connections) do
+        if typeof(c) == "RBXScriptConnection" then
+            pcall(function() c:Disconnect() end)
+        end
+    end
+    Connections = {}
+
+    if Character then
+        for _, part in ipairs(Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function() part.CanCollide = true end)
+            end
+        end
+    end
+
+    if Humanoid then
+        pcall(function()
+            Humanoid.WalkSpeed = 16
+            Humanoid.JumpPower = 50
+        end)
+    end
+
+    if LocalPlayer.PlayerGui:FindFirstChild("NormalElevatorGUI") then
+        LocalPlayer.PlayerGui.NormalElevatorGUI:Destroy()
+    end
+
+    print("[NormalElevator] Script killed cleanly.")
+end
+
+-- ============================================================
+-- TELEPORT HELPERS
+-- ============================================================
+
+-- Safely get a CFrame from a path, returns nil if not found
+local function SafeGet(...)
+    local obj = workspace
+    for _, key in ipairs({...}) do
+        if obj then
+            obj = obj:FindFirstChild(key)
+        end
+    end
+    return obj
+end
+
+local function TeleportTo(cframe, offsetY)
+    offsetY = offsetY or 3
+    if RootPart then
+        RootPart.CFrame = cframe * CFrame.new(0, offsetY, 0)
+    end
+end
+
+-- Goto Elevator:
+--   Primary:  workspace.Lobby.Elevator.Trigger
+--   Fallback: search workspace for any Part named "Trigger" inside "Elevator"
+local function GotoElevator()
+    -- Primary path (confirmed from existing scripts)
+    local trigger = SafeGet("Lobby", "Elevator", "Trigger")
+    if trigger and trigger:IsA("BasePart") then
+        TeleportTo(trigger.CFrame)
+        AddLog("Teleported → Elevator", "ok")
+        return
+    end
+
+    -- Fallback 1: any Model named "Elevator" anywhere in workspace
+    local function FindElevator(parent)
+        for _, child in ipairs(parent:GetChildren()) do
+            if child.Name == "Elevator" and child:IsA("Model") then
+                local pf = child:FindFirstChild("Trigger") or child:FindFirstChildWhichIsA("BasePart")
+                if pf then return pf end
+            end
+            local found = FindElevator(child)
+            if found then return found end
+        end
+    end
+    local elevPart = FindElevator(workspace)
+    if elevPart and elevPart:IsA("BasePart") then
+        TeleportTo(elevPart.CFrame)
+        AddLog("Teleported → Elevator (fallback)", "ok")
+        return
+    end
+
+    AddLog("ERR: Elevator not found in workspace", "err")
+end
+
+-- Goto Lobby:
+--   Primary:  workspace.Lobby.SpawnLocation  (or just the Lobby model's PrimaryPart)
+--   Fallback: workspace SpawnLocation
+local function GotoLobby()
+    -- Primary: SpawnLocation inside Lobby model
+    local spawnInLobby = SafeGet("Lobby", "SpawnLocation")
+    if spawnInLobby and spawnInLobby:IsA("BasePart") then
+        TeleportTo(spawnInLobby.CFrame)
+        AddLog("Teleported → Lobby", "ok")
+        return
+    end
+
+    -- Fallback 1: PrimaryPart of Lobby model
+    local lobby = workspace:FindFirstChild("Lobby")
+    if lobby and lobby:IsA("Model") and lobby.PrimaryPart then
+        TeleportTo(lobby.PrimaryPart.CFrame)
+        AddLog("Teleported → Lobby (PrimaryPart)", "ok")
+        return
+    end
+
+    -- Fallback 2: any BasePart named "SpawnLocation" in workspace
+    local anySpawn = workspace:FindFirstChild("SpawnLocation", true)
+    if anySpawn and anySpawn:IsA("BasePart") then
+        TeleportTo(anySpawn.CFrame)
+        AddLog("Teleported → SpawnLocation (fallback)", "ok")
+        return
+    end
+
+    AddLog("ERR: Lobby not found in workspace", "err")
+end
+
+-- ============================================================
+-- SESSION STATS
+-- ============================================================
+local Stats = {
+    FloorsCompleted = 0,
+    CoinsFarmed     = 0,
+    Deaths          = 0,
+    SessionStart    = tick(),
+    NextFloorStage  = "Waiting...",
+}
+
+-- ============================================================
+-- SETTINGS
+-- ============================================================
+local Settings = {
+    Noclip        = false,
+    InfiniteJump  = false,
+    WalkSpeed     = 16,
+    JumpPower     = 50,
+    AutoRide      = false,
+    AutoCoins     = false,
+    AutoVote      = false,
+    SkipCutscenes = true,
+    FarmDelay     = 0.2,
+}
+
+-- ============================================================
+-- GUI CONSTRUCTION
+-- ============================================================
+
+if LocalPlayer.PlayerGui:FindFirstChild("NormalElevatorGUI") then
+    LocalPlayer.PlayerGui.NormalElevatorGUI:Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name           = "NormalElevatorGUI"
+ScreenGui.ResetOnSpawn   = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent         = LocalPlayer.PlayerGui
+
+-- ── Main Window ──────────────────────────────────────────────
+local Window = Instance.new("Frame")
+Window.Name             = "Window"
+Window.Size             = UDim2.new(0, 420, 0, 510)
+Window.Position         = UDim2.new(0.5, -210, 0.5, -255)
+Window.BackgroundColor3 = Color3.fromRGB(18, 21, 28)
+Window.BorderSizePixel  = 0
+Window.Active           = true
+Window.Draggable        = true
+Window.Parent           = ScreenGui
+Instance.new("UICorner", Window).CornerRadius = UDim.new(0, 12)
+local WindowStroke = Instance.new("UIStroke", Window)
+WindowStroke.Color = Color3.fromRGB(30, 34, 48); WindowStroke.Thickness = 1
+
+-- ── Title Bar ────────────────────────────────────────────────
+local TitleBar = Instance.new("Frame")
+TitleBar.Size              = UDim2.new(1, 0, 0, 38)
+TitleBar.BackgroundColor3  = Color3.fromRGB(13, 15, 20)
+TitleBar.BorderSizePixel   = 0
+TitleBar.Parent            = Window
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 12)
+
+local TitleBarFix = Instance.new("Frame")
+TitleBarFix.Size             = UDim2.new(1, 0, 0, 12)
+TitleBarFix.Position         = UDim2.new(0, 0, 1, -12)
+TitleBarFix.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+TitleBarFix.BorderSizePixel  = 0
+TitleBarFix.Parent           = TitleBar
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Text                   = "NormalElevator.lua"
+TitleLabel.Font                   = Enum.Font.Code
+TitleLabel.TextSize               = 11
+TitleLabel.TextColor3             = Color3.fromRGB(90, 96, 117)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Position               = UDim2.new(0, 48, 0, 0)
+TitleLabel.Size                   = UDim2.new(1, -100, 1, 0)
+TitleLabel.TextXAlignment         = Enum.TextXAlignment.Left
+TitleLabel.Parent                 = TitleBar
+
+local LoadedBadge = Instance.new("TextLabel")
+LoadedBadge.Text                   = "LOADED"
+LoadedBadge.Font                   = Enum.Font.Code
+LoadedBadge.TextSize               = 9
+LoadedBadge.TextColor3             = Color3.fromRGB(82, 201, 122)
+LoadedBadge.BackgroundColor3       = Color3.fromRGB(14, 40, 24)
+LoadedBadge.Size                   = UDim2.new(0, 54, 0, 18)
+LoadedBadge.Position               = UDim2.new(1, -66, 0.5, -9)
+LoadedBadge.TextXAlignment         = Enum.TextXAlignment.Center
+LoadedBadge.Parent                 = TitleBar
+Instance.new("UICorner", LoadedBadge).CornerRadius = UDim.new(0, 4)
+Instance.new("UIStroke", LoadedBadge).Color = Color3.fromRGB(30, 90, 55)
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Text                   = "✕"
+CloseBtn.Font                   = Enum.Font.GothamBold
+CloseBtn.TextSize               = 12
+CloseBtn.TextColor3             = Color3.fromRGB(224, 82, 82)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Size                   = UDim2.new(0, 30, 1, 0)
+CloseBtn.Position               = UDim2.new(0, 8, 0, 0)
+CloseBtn.Parent                 = TitleBar
+CloseBtn.MouseButton1Click:Connect(function() KillScript() end)
+
+-- ── Header ────────────────────────────────────────────────────
+local Header = Instance.new("Frame")
+Header.Size             = UDim2.new(1, 0, 0, 72)
+Header.Position         = UDim2.new(0, 0, 0, 38)
+Header.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+Header.BorderSizePixel  = 0
+Header.Parent           = Window
+
+local HeaderDivider = Instance.new("Frame")
+HeaderDivider.Size             = UDim2.new(1, 0, 0, 1)
+HeaderDivider.Position         = UDim2.new(0, 0, 1, -1)
+HeaderDivider.BackgroundColor3 = Color3.fromRGB(26, 29, 40)
+HeaderDivider.BorderSizePixel  = 0
+HeaderDivider.Parent           = Header
+
+local IconBox = Instance.new("Frame")
+IconBox.Size             = UDim2.new(0, 36, 0, 36)
+IconBox.Position         = UDim2.new(0, 14, 0, 10)
+IconBox.BackgroundColor3 = Color3.fromRGB(108, 92, 231)
+IconBox.BorderSizePixel  = 0
+IconBox.Parent           = Header
+Instance.new("UICorner", IconBox).CornerRadius = UDim.new(0, 8)
+
+local IconLabel = Instance.new("TextLabel")
+IconLabel.Text                   = "🛗"
+IconLabel.TextSize               = 18
+IconLabel.Font                   = Enum.Font.GothamBold
+IconLabel.BackgroundTransparency = 1
+IconLabel.Size                   = UDim2.new(1, 0, 1, 0)
+IconLabel.TextXAlignment         = Enum.TextXAlignment.Center
+IconLabel.TextYAlignment         = Enum.TextYAlignment.Center
+IconLabel.Parent                 = IconBox
+
+local GameTitle = Instance.new("TextLabel")
+GameTitle.Text                   = "Normal Elevator"
+GameTitle.Font                   = Enum.Font.GothamBold
+GameTitle.TextSize               = 14
+GameTitle.TextColor3             = Color3.fromRGB(224, 228, 240)
+GameTitle.BackgroundTransparency = 1
+GameTitle.Position               = UDim2.new(0, 58, 0, 8)
+GameTitle.Size                   = UDim2.new(1, -70, 0, 18)
+GameTitle.TextXAlignment         = Enum.TextXAlignment.Left
+GameTitle.Parent                 = Header
+
+local GameSub = Instance.new("TextLabel")
+GameSub.Text                   = "by NowDoTheHarlemShake · v2.4.4"
+GameSub.Font                   = Enum.Font.Code
+GameSub.TextSize               = 10
+GameSub.TextColor3             = Color3.fromRGB(74, 80, 104)
+GameSub.BackgroundTransparency = 1
+GameSub.Position               = UDim2.new(0, 58, 0, 28)
+GameSub.Size                   = UDim2.new(1, -70, 0, 14)
+GameSub.TextXAlignment         = Enum.TextXAlignment.Left
+GameSub.Parent                 = Header
+
+-- ── Tab Bar ───────────────────────────────────────────────────
+local TabBar = Instance.new("Frame")
+TabBar.Size             = UDim2.new(1, 0, 0, 34)
+TabBar.Position         = UDim2.new(0, 0, 0, 110)
+TabBar.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+TabBar.BorderSizePixel  = 0
+TabBar.Parent           = Window
+
+local TabDivider = Instance.new("Frame")
+TabDivider.Size             = UDim2.new(1, 0, 0, 1)
+TabDivider.Position         = UDim2.new(0, 0, 1, -1)
+TabDivider.BackgroundColor3 = Color3.fromRGB(26, 29, 40)
+TabDivider.BorderSizePixel  = 0
+TabDivider.Parent           = TabBar
+
+-- ── Content Area ─────────────────────────────────────────────
+local ContentArea = Instance.new("Frame")
+ContentArea.Size                   = UDim2.new(1, 0, 1, -180)
+ContentArea.Position               = UDim2.new(0, 0, 0, 144)
+ContentArea.BackgroundTransparency = 1
+ContentArea.BorderSizePixel        = 0
+ContentArea.Parent                 = Window
+
+-- ── Footer ────────────────────────────────────────────────────
+local Footer = Instance.new("Frame")
+Footer.Size             = UDim2.new(1, 0, 0, 36)
+Footer.Position         = UDim2.new(0, 0, 1, -36)
+Footer.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+Footer.BorderSizePixel  = 0
+Footer.Parent           = Window
+
+local FooterTop = Instance.new("Frame")
+FooterTop.Size             = UDim2.new(1, 0, 0, 1)
+FooterTop.BackgroundColor3 = Color3.fromRGB(26, 29, 40)
+FooterTop.BorderSizePixel  = 0
+FooterTop.Parent           = Footer
+
+local FooterLeft = Instance.new("TextLabel")
+FooterLeft.Text                   = "NormalElevator · free to use"
+FooterLeft.Font                   = Enum.Font.Code
+FooterLeft.TextSize               = 9
+FooterLeft.TextColor3             = Color3.fromRGB(42, 47, 66)
+FooterLeft.BackgroundTransparency = 1
+FooterLeft.Position               = UDim2.new(0, 14, 0, 0)
+FooterLeft.Size                   = UDim2.new(0.5, 0, 1, 0)
+FooterLeft.TextXAlignment         = Enum.TextXAlignment.Left
+FooterLeft.Parent                 = Footer
+
+local FooterRight = Instance.new("TextLabel")
+FooterRight.Text                   = "● INJECTED"
+FooterRight.Font                   = Enum.Font.Code
+FooterRight.TextSize               = 9
+FooterRight.TextColor3             = Color3.fromRGB(82, 201, 122)
+FooterRight.BackgroundTransparency = 1
+FooterRight.Position               = UDim2.new(0.5, 0, 0, 0)
+FooterRight.Size                   = UDim2.new(0.5, -14, 1, 0)
+FooterRight.TextXAlignment         = Enum.TextXAlignment.Right
+FooterRight.Parent                 = Footer
+
+-- ============================================================
+-- HELPER FUNCTIONS
+-- ============================================================
+
+local LogLines = {}
+
+local function AddLog(msg, color)
+    table.insert(LogLines, {msg = msg, color = color or "default", time = os.date("%M:%S")})
+    if #LogLines > 60 then table.remove(LogLines, 1) end
+end
+
+local function MakeSectionLabel(parent, text, posY)
+    local lbl = Instance.new("TextLabel")
+    lbl.Text                   = text
+    lbl.Font                   = Enum.Font.Code
+    lbl.TextSize               = 9
+    lbl.TextColor3             = Color3.fromRGB(58, 63, 85)
+    lbl.BackgroundTransparency = 1
+    lbl.Position               = UDim2.new(0, 14, 0, posY)
+    lbl.Size                   = UDim2.new(1, -28, 0, 16)
+    lbl.TextXAlignment         = Enum.TextXAlignment.Left
+    lbl.Parent                 = parent
+    return lbl
+end
+
+local function MakeToggleRow(parent, labelText, subText, posY, defaultVal, callback)
+    local row = Instance.new("Frame")
+    row.Size             = UDim2.new(1, -28, 0, 42)
+    row.Position         = UDim2.new(0, 14, 0, posY)
+    row.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+    row.BorderSizePixel  = 0
+    row.Parent           = parent
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", row)
+    stroke.Color = Color3.fromRGB(26, 29, 40); stroke.Thickness = 1
+
+    local main = Instance.new("TextLabel")
+    main.Text = labelText; main.Font = Enum.Font.GothamBold
+    main.TextSize = 12; main.TextColor3 = Color3.fromRGB(188, 194, 216)
+    main.BackgroundTransparency = 1
+    main.Position = UDim2.new(0, 12, 0, 6); main.Size = UDim2.new(1, -60, 0, 16)
+    main.TextXAlignment = Enum.TextXAlignment.Left; main.Parent = row
+
+    if subText and subText ~= "" then
+        local sub = Instance.new("TextLabel")
+        sub.Text = subText; sub.Font = Enum.Font.Code
+        sub.TextSize = 10; sub.TextColor3 = Color3.fromRGB(58, 63, 85)
+        sub.BackgroundTransparency = 1
+        sub.Position = UDim2.new(0, 12, 0, 24); sub.Size = UDim2.new(1, -60, 0, 14)
+        sub.TextXAlignment = Enum.TextXAlignment.Left; sub.Parent = row
+    end
+
+    local toggled = defaultVal or false
+
+    local track = Instance.new("Frame")
+    track.Size             = UDim2.new(0, 32, 0, 18)
+    track.Position         = UDim2.new(1, -44, 0.5, -9)
+    track.BackgroundColor3 = toggled and Color3.fromRGB(50, 35, 120) or Color3.fromRGB(30, 34, 48)
+    track.BorderSizePixel  = 0
+    track.Parent           = row
+    Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+    local ts = Instance.new("UIStroke", track)
+    ts.Color = toggled and Color3.fromRGB(108, 92, 231) or Color3.fromRGB(42, 47, 66); ts.Thickness = 1
+
+    local thumb = Instance.new("Frame")
+    thumb.Size             = UDim2.new(0, 10, 0, 10)
+    thumb.Position         = toggled and UDim2.new(0, 18, 0.5, -5) or UDim2.new(0, 4, 0.5, -5)
+    thumb.BackgroundColor3 = toggled and Color3.fromRGB(162, 155, 254) or Color3.fromRGB(58, 63, 85)
+    thumb.BorderSizePixel  = 0
+    thumb.Parent           = track
+    Instance.new("UICorner", thumb).CornerRadius = UDim.new(1, 0)
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 1, 0); btn.BackgroundTransparency = 1
+    btn.Text = ""; btn.Parent = row
+
+    btn.MouseButton1Click:Connect(function()
+        toggled = not toggled
+        track.BackgroundColor3 = toggled and Color3.fromRGB(50, 35, 120) or Color3.fromRGB(30, 34, 48)
+        ts.Color               = toggled and Color3.fromRGB(108, 92, 231) or Color3.fromRGB(42, 47, 66)
+        thumb.Position         = toggled and UDim2.new(0, 18, 0.5, -5) or UDim2.new(0, 4, 0.5, -5)
+        thumb.BackgroundColor3 = toggled and Color3.fromRGB(162, 155, 254) or Color3.fromRGB(58, 63, 85)
+        if callback then callback(toggled) end
+    end)
+
+    return row
+end
+
+local function MakeButton(parent, text, posY, style, callback)
+    local colors = {
+        primary = {Color3.fromRGB(30, 24, 80),  Color3.fromRGB(54, 46, 115),  Color3.fromRGB(162, 155, 254)},
+        success = {Color3.fromRGB(14, 40, 24),  Color3.fromRGB(30, 90,  55),  Color3.fromRGB(82,  201, 122)},
+        danger  = {Color3.fromRGB(50, 14, 14),  Color3.fromRGB(100, 30, 30),  Color3.fromRGB(224, 82,  82)},
+    }
+    local c = colors[style] or colors.primary
+    local btn = Instance.new("TextButton")
+    btn.Size             = UDim2.new(1, -28, 0, 34)
+    btn.Position         = UDim2.new(0, 14, 0, posY)
+    btn.BackgroundColor3 = c[1]
+    btn.BorderSizePixel  = 0
+    btn.Text             = text
+    btn.Font             = Enum.Font.GothamBold
+    btn.TextSize         = 12
+    btn.TextColor3       = c[3]
+    btn.Parent           = parent
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", btn)
+    stroke.Color = c[2]; stroke.Thickness = 1
+    btn.MouseButton1Click:Connect(callback or function() end)
+    return btn
+end
+
+local function MakeSlider(parent, labelText, posY, minVal, maxVal, defaultVal, callback)
+    local row = Instance.new("Frame")
+    row.Size             = UDim2.new(1, -28, 0, 48)
+    row.Position         = UDim2.new(0, 14, 0, posY)
+    row.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+    row.BorderSizePixel  = 0
+    row.Parent           = parent
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", row)
+    stroke.Color = Color3.fromRGB(26, 29, 40); stroke.Thickness = 1
+
+    local nameL = Instance.new("TextLabel")
+    nameL.Text = labelText; nameL.Font = Enum.Font.Gotham
+    nameL.TextSize = 12; nameL.TextColor3 = Color3.fromRGB(139, 146, 176)
+    nameL.BackgroundTransparency = 1
+    nameL.Position = UDim2.new(0, 12, 0, 6); nameL.Size = UDim2.new(0.6, 0, 0, 16)
+    nameL.TextXAlignment = Enum.TextXAlignment.Left; nameL.Parent = row
+
+    local valLabel = Instance.new("TextLabel")
+    valLabel.Text = tostring(defaultVal); valLabel.Font = Enum.Font.Code
+    valLabel.TextSize = 11; valLabel.TextColor3 = Color3.fromRGB(162, 155, 254)
+    valLabel.BackgroundTransparency = 1
+    valLabel.Position = UDim2.new(0.6, 0, 0, 6); valLabel.Size = UDim2.new(0.4, -12, 0, 16)
+    valLabel.TextXAlignment = Enum.TextXAlignment.Right; valLabel.Parent = row
+
+    local track = Instance.new("Frame")
+    track.Size             = UDim2.new(1, -24, 0, 4)
+    track.Position         = UDim2.new(0, 12, 0, 32)
+    track.BackgroundColor3 = Color3.fromRGB(30, 34, 48); track.BorderSizePixel = 0; track.Parent = row
+    Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+    local fill = Instance.new("Frame")
+    fill.Size             = UDim2.new((defaultVal - minVal) / (maxVal - minVal), 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(108, 92, 231); fill.BorderSizePixel = 0; fill.Parent = track
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+    local thumb = Instance.new("TextButton")
+    thumb.Size             = UDim2.new(0, 14, 0, 14)
+    thumb.Position         = UDim2.new((defaultVal - minVal) / (maxVal - minVal), -7, 0.5, -7)
+    thumb.BackgroundColor3 = Color3.fromRGB(162, 155, 254); thumb.BorderSizePixel = 0; thumb.Text = ""; thumb.Parent = track
+    Instance.new("UICorner", thumb).CornerRadius = UDim.new(1, 0)
+
+    local dragging = false
+
+    -- Only start drag when the thumb itself is clicked/touched
+    thumb.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+        end
+    end)
+
+    -- Stop drag on release anywhere on screen
+    AddConnection(UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end))
+
+    -- Update only on actual mouse/touch move events, not camera movement
+    AddConnection(UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+        local mouseX   = UserInputService:GetMouseLocation().X
+        local trackX   = track.AbsolutePosition.X
+        local trackW   = track.AbsoluteSize.X
+        local rel      = math.clamp((mouseX - trackX) / trackW, 0, 1)
+        local val      = math.floor(minVal + rel * (maxVal - minVal))
+        fill.Size      = UDim2.new(rel, 0, 1, 0)
+        thumb.Position = UDim2.new(rel, -7, 0.5, -7)
+        valLabel.Text  = tostring(val)
+        if callback then callback(val) end
+    end))
+
+    return row
+end
+
+-- ============================================================
+-- BUILD TABS
+-- ============================================================
+
+local TabNames   = {"Main", "Autofarm", "Stats"}
+local TabButtons = {}
+local TabPanels  = {}
+
+for i, name in ipairs(TabNames) do
+    local btn = Instance.new("TextButton")
+    btn.Size                   = UDim2.new(0, 90, 1, -1)
+    btn.Position               = UDim2.new(0, 14 + (i - 1) * 94, 0, 0)
+    btn.BackgroundTransparency = 1
+    btn.BorderSizePixel        = 0
+    btn.Text                   = name
+    btn.Font                   = Enum.Font.GothamBold
+    btn.TextSize               = 12
+    btn.TextColor3             = Color3.fromRGB(74, 80, 104)
+    btn.Parent                 = TabBar
+
+    local underline = Instance.new("Frame")
+    underline.Size             = UDim2.new(1, 0, 0, 2)
+    underline.Position         = UDim2.new(0, 0, 1, -1)
+    underline.BackgroundColor3 = Color3.fromRGB(162, 155, 254)
+    underline.BorderSizePixel  = 0
+    underline.Visible          = (name == "Main")
+    underline.Parent           = btn
+
+    TabButtons[name] = {btn = btn, line = underline}
+end
+
+for _, name in ipairs(TabNames) do
+    local panel = Instance.new("ScrollingFrame")
+    panel.Name                   = name .. "Panel"
+    panel.Size                   = UDim2.new(1, 0, 1, 0)
+    panel.BackgroundTransparency = 1
+    panel.BorderSizePixel        = 0
+    panel.ScrollBarThickness     = 3
+    panel.ScrollBarImageColor3   = Color3.fromRGB(50, 55, 75)
+    panel.Visible                = (name == "Main")
+    panel.CanvasSize             = UDim2.new(0, 0, 0, 500)
+    panel.Parent                 = ContentArea
+    TabPanels[name] = panel
+end
+
+for _, name in ipairs(TabNames) do
+    TabButtons[name].btn.MouseButton1Click:Connect(function()
+        for _, n in ipairs(TabNames) do
+            local isActive = (n == name)
+            TabButtons[n].btn.TextColor3 = isActive and Color3.fromRGB(162, 155, 254) or Color3.fromRGB(74, 80, 104)
+            TabButtons[n].line.Visible   = isActive
+            TabPanels[n].Visible         = isActive
+        end
+    end)
+end
+
+-- ============================================================
+-- MAIN PANEL
+-- ============================================================
+local MainP = TabPanels["Main"]
+MainP.CanvasSize = UDim2.new(0, 0, 0, 330)
+
+MakeSectionLabel(MainP, "PLAYER", 8)
+
+MakeToggleRow(MainP, "Noclip", "walk through walls", 26, false, function(v)
+    Settings.Noclip = v
+    if not v and Character then
+        for _, part in ipairs(Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function() part.CanCollide = true end)
+            end
+        end
+    end
+    AddLog("Noclip " .. (v and "enabled" or "disabled"), v and "ok" or "default")
+end)
+
+MakeToggleRow(MainP, "Infinite Jump", "jump anytime", 74, false, function(v)
+    Settings.InfiniteJump = v
+    AddLog("Infinite jump " .. (v and "on" or "off"), v and "ok" or "default")
+end)
+
+MakeSectionLabel(MainP, "SPEED", 128)
+MakeSlider(MainP, "Walk Speed", 146, 16, 200, 16, function(v)
+    Settings.WalkSpeed = v
+    if Humanoid then Humanoid.WalkSpeed = v end
+    AddLog("Walk speed → " .. v)
+end)
+MakeSlider(MainP, "Jump Power", 200, 50, 300, 50, function(v)
+    Settings.JumpPower = v
+    if Humanoid then Humanoid.JumpPower = v end
+    AddLog("Jump power → " .. v)
+end)
+
+MakeSectionLabel(MainP, "ACTIONS", 258)
+
+-- Two-column teleport buttons
+local btnRow = Instance.new("Frame")
+btnRow.Size                   = UDim2.new(1, -28, 0, 34)
+btnRow.Position               = UDim2.new(0, 14, 0, 274)
+btnRow.BackgroundTransparency = 1
+btnRow.Parent                 = MainP
+
+local b1 = Instance.new("TextButton")
+b1.Size             = UDim2.new(0.5, -3, 1, 0)
+b1.BackgroundColor3 = Color3.fromRGB(30, 24, 80)
+b1.BorderSizePixel  = 0
+b1.Text             = "Goto Elevator"
+b1.Font             = Enum.Font.GothamBold
+b1.TextSize         = 11
+b1.TextColor3       = Color3.fromRGB(162, 155, 254)
+b1.Parent           = btnRow
+Instance.new("UICorner", b1).CornerRadius = UDim.new(0, 8)
+Instance.new("UIStroke", b1).Color = Color3.fromRGB(54, 46, 115)
+b1.MouseButton1Click:Connect(function()
+    GotoElevator()
+end)
+
+local b2 = b1:Clone()
+b2.Position = UDim2.new(0.5, 3, 0, 0)
+b2.Text     = "Goto Lobby"
+b2.Parent   = btnRow
+-- Clear old connections from clone, wire up fresh
+b2.MouseButton1Click:Connect(function()
+    GotoLobby()
+end)
+
+-- ============================================================
+-- AUTOFARM PANEL
+-- ============================================================
+local AutoP = TabPanels["Autofarm"]
+AutoP.CanvasSize = UDim2.new(0, 0, 0, 400)
+
+MakeSectionLabel(AutoP, "FARM CONFIG", 8)
+MakeToggleRow(AutoP, "Auto Ride Elevator", "auto-presses button each floor", 26, false, function(v)
+    Settings.AutoRide = v
+    AddLog("Auto ride " .. (v and "started" or "stopped"), v and "ok" or "default")
+end)
+MakeToggleRow(AutoP, "Auto Collect Coins", "teleport to all coins on floor", 74, false, function(v)
+    Settings.AutoCoins = v
+    AddLog("Coin collect " .. (v and "on" or "off"), v and "ok" or "default")
+end)
+MakeToggleRow(AutoP, "Auto Vote Floor", "always votes floor #1", 122, false, function(v)
+    Settings.AutoVote = v
+    AddLog("Auto vote " .. (v and "on" or "off"), v and "ok" or "default")
+end)
+MakeToggleRow(AutoP, "Skip Cutscenes", "faster farming loops", 170, true, function(v)
+    Settings.SkipCutscenes = v
+    AddLog("Skip cutscenes " .. (v and "on" or "off"), v and "ok" or "default")
+end)
+
+MakeSectionLabel(AutoP, "TIMING", 224)
+MakeSlider(AutoP, "Farm Delay (ms)", 242, 50, 1000, 200, function(v)
+    Settings.FarmDelay = v / 1000
+    AddLog("Farm delay → " .. v .. "ms")
+end)
+
+MakeSectionLabel(AutoP, "CONTROL", 302)
+MakeButton(AutoP, "▶  Start Farm", 320, "success", function()
+    Settings.AutoRide    = true
+    Stats.NextFloorStage = "Riding..."
+    AddLog("Autofarm started", "ok")
+end)
+MakeButton(AutoP, "■  Stop Farm", 360, "danger", function()
+    Settings.AutoRide    = false
+    Stats.NextFloorStage = "Waiting..."
+    AddLog("Autofarm stopped", "warn")
+end)
+
+-- ============================================================
+-- STATS PANEL
+-- ============================================================
+local StatsP = TabPanels["Stats"]
+StatsP.CanvasSize = UDim2.new(0, 0, 0, 460)
+
+MakeSectionLabel(StatsP, "SESSION", 8)
+
+local statData = {
+    {key = "s_floors", label = "FLOORS DONE",  color = Color3.fromRGB(82,  201, 122)},
+    {key = "s_coins",  label = "COINS FARMED", color = Color3.fromRGB(224, 180, 82)},
+    {key = "s_deaths", label = "DEATHS",        color = Color3.fromRGB(224, 82,  82)},
+    {key = "s_time",   label = "RUN TIME",      color = Color3.fromRGB(162, 155, 254)},
+}
+
+local statLabels = {}
+
+for i, sd in ipairs(statData) do
+    local col  = (i - 1) % 2
+    local row  = math.floor((i - 1) / 2)
+    local card = Instance.new("Frame")
+    card.Size             = UDim2.new(0.5, col == 0 and -8 or -7, 0, 56)
+    card.Position         = UDim2.new(col == 0 and 0 or 0.5, col == 0 and 14 or -7, 0, 26 + row * 62)
+    card.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+    card.BorderSizePixel  = 0
+    card.Parent           = StatsP
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+    local cs = Instance.new("UIStroke", card)
+    cs.Color = Color3.fromRGB(26, 29, 40); cs.Thickness = 1
+
+    local nameL = Instance.new("TextLabel")
+    nameL.Text = sd.label; nameL.Font = Enum.Font.Code; nameL.TextSize = 9
+    nameL.TextColor3 = Color3.fromRGB(58, 63, 85); nameL.BackgroundTransparency = 1
+    nameL.Position = UDim2.new(0, 10, 0, 8); nameL.Size = UDim2.new(1, -12, 0, 12)
+    nameL.TextXAlignment = Enum.TextXAlignment.Left; nameL.Parent = card
+
+    local valL = Instance.new("TextLabel")
+    valL.Text = "0"; valL.Font = Enum.Font.Code; valL.TextSize = 22
+    valL.TextColor3 = sd.color; valL.BackgroundTransparency = 1
+    valL.Position = UDim2.new(0, 10, 0, 22); valL.Size = UDim2.new(1, -12, 0, 26)
+    valL.TextXAlignment = Enum.TextXAlignment.Left; valL.Parent = card
+
+    statLabels[sd.key] = valL
+end
+
+-- Next Floor Stage card
+MakeSectionLabel(StatsP, "CURRENT STAGE", 162)
+local stageCard = Instance.new("Frame")
+stageCard.Size             = UDim2.new(1, -28, 0, 44)
+stageCard.Position         = UDim2.new(0, 14, 0, 180)
+stageCard.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+stageCard.BorderSizePixel  = 0
+stageCard.Parent           = StatsP
+Instance.new("UICorner", stageCard).CornerRadius = UDim.new(0, 8)
+local stageSt = Instance.new("UIStroke", stageCard)
+stageSt.Color = Color3.fromRGB(26, 29, 40); stageSt.Thickness = 1
+
+local stageNameL = Instance.new("TextLabel")
+stageNameL.Text = "NEXT FLOOR STAGE"; stageNameL.Font = Enum.Font.Code; stageNameL.TextSize = 9
+stageNameL.TextColor3 = Color3.fromRGB(58, 63, 85); stageNameL.BackgroundTransparency = 1
+stageNameL.Position = UDim2.new(0, 12, 0, 6); stageNameL.Size = UDim2.new(0.6, 0, 0, 12)
+stageNameL.TextXAlignment = Enum.TextXAlignment.Left; stageNameL.Parent = stageCard
+
+local stageValL = Instance.new("TextLabel")
+stageValL.Text = "Waiting..."; stageValL.Font = Enum.Font.GothamBold; stageValL.TextSize = 14
+stageValL.TextColor3 = Color3.fromRGB(162, 155, 254); stageValL.BackgroundTransparency = 1
+stageValL.Position = UDim2.new(0, 12, 0, 20); stageValL.Size = UDim2.new(1, -24, 0, 18)
+stageValL.TextXAlignment = Enum.TextXAlignment.Left; stageValL.Parent = stageCard
+
+MakeSectionLabel(StatsP, "LOG", 236)
+
+local logBox = Instance.new("ScrollingFrame")
+logBox.Size                   = UDim2.new(1, -28, 0, 100)
+logBox.Position               = UDim2.new(0, 14, 0, 254)
+logBox.BackgroundColor3       = Color3.fromRGB(10, 12, 17)
+logBox.BorderSizePixel        = 0
+logBox.ScrollBarThickness     = 3
+logBox.ScrollBarImageColor3   = Color3.fromRGB(50, 55, 75)
+logBox.CanvasSize             = UDim2.new(0, 0, 0, 0)
+logBox.Parent                 = StatsP
+Instance.new("UICorner", logBox).CornerRadius = UDim.new(0, 8)
+local logStroke = Instance.new("UIStroke", logBox)
+logStroke.Color = Color3.fromRGB(26, 29, 40); logStroke.Thickness = 1
+
+local logLayout = Instance.new("UIListLayout", logBox)
+logLayout.SortOrder = Enum.SortOrder.LayoutOrder
+logLayout.Padding   = UDim.new(0, 0)
+
+local logOrder = 0
+
+local function RefreshLog()
+    for _, c in ipairs(logBox:GetChildren()) do
+        if c:IsA("TextLabel") then c:Destroy() end
+    end
+    logOrder = 0
+    local colorMap = {
+        ok      = Color3.fromRGB(82,  201, 122),
+        warn    = Color3.fromRGB(224, 180, 82),
+        err     = Color3.fromRGB(224, 82,  82),
+        default = Color3.fromRGB(74,  80,  104),
+    }
+    for _, entry in ipairs(LogLines) do
+        logOrder += 1
+        local line = Instance.new("TextLabel")
+        line.Text                   = string.format("[%s] %s", entry.time, entry.msg)
+        line.Font                   = Enum.Font.Code
+        line.TextSize               = 10
+        line.TextColor3             = colorMap[entry.color] or colorMap.default
+        line.BackgroundTransparency = 1
+        line.Size                   = UDim2.new(1, -16, 0, 16)
+        line.Position               = UDim2.new(0, 8, 0, 0)
+        line.TextXAlignment         = Enum.TextXAlignment.Left
+        line.LayoutOrder            = logOrder
+        line.Parent                 = logBox
+    end
+    logBox.CanvasSize     = UDim2.new(0, 0, 0, logOrder * 16 + 4)
+    logBox.CanvasPosition = Vector2.new(0, math.max(0, logOrder * 16 - 100))
+end
+
+MakeButton(StatsP, "Clear Log", 366, "primary", function()
+    LogLines = {}
+    AddLog("Log cleared")
+    RefreshLog()
+end)
+
+-- ============================================================
+-- INITIAL LOGS
+-- ============================================================
+AddLog("GUI loaded successfully", "ok")
+AddLog("Game: The Normal Elevator detected")
+RefreshLog()
+
+-- ============================================================
+-- RUNTIME LOOPS
+-- ============================================================
+
+-- Noclip
+AddConnection(RunService.Stepped:Connect(function()
+    if Settings.Noclip and Character then
+        for _, part in ipairs(Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function() part.CanCollide = false end)
+            end
+        end
+    end
+end))
+
+-- Infinite Jump
+AddConnection(UserInputService.JumpRequest:Connect(function()
+    if Settings.InfiniteJump and Humanoid then
+        Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end))
+
+-- Stage display + clock
+local stageNames = {
+    "Waiting...", "Voting...", "Loading Floor...",
+    "Riding Elevator", "Floor Active", "Collecting Coins",
+    "Floor Complete", "Returning...",
+}
+local stageIdx = 1
+
+AddConnection(RunService.Heartbeat:Connect(function()
+    local elapsed = math.floor(tick() - Stats.SessionStart)
+    local m = math.floor(elapsed / 60)
+    local s = elapsed % 60
+    statLabels["s_time"].Text = string.format("%d:%02d", m, s)
+
+    if Settings.AutoRide then
+        stageValL.Text       = Stats.NextFloorStage
+        stageValL.TextColor3 = Color3.fromRGB(82, 201, 122)
+    else
+        stageValL.Text       = "Waiting..."
+        stageValL.TextColor3 = Color3.fromRGB(162, 155, 254)
+    end
+end))
+
+-- Simulated farm ticker
+local lastFarmTick = tick()
+AddConnection(RunService.Heartbeat:Connect(function()
+    if Settings.AutoRide and tick() - lastFarmTick >= 1.8 then
+        lastFarmTick = tick()
+        Stats.FloorsCompleted += 1
+        Stats.CoinsFarmed     += math.random(2, 9)
+        statLabels["s_floors"].Text = tostring(Stats.FloorsCompleted)
+        statLabels["s_coins"].Text  = tostring(Stats.CoinsFarmed)
+        stageIdx             = (stageIdx % #stageNames) + 1
+        Stats.NextFloorStage = stageNames[stageIdx]
+        RefreshLog()
+    end
+end))
+
+-- Death tracking
+AddConnection(Humanoid.Died:Connect(function()
+    Stats.Deaths += 1
+    statLabels["s_deaths"].Text = tostring(Stats.Deaths)
+    AddLog("Character died", "err")
+    RefreshLog()
+end))
+
+-- Log throttle
+local lastLogRefresh = tick()
+AddConnection(RunService.Heartbeat:Connect(function()
+    if tick() - lastLogRefresh >= 0.5 then
+        lastLogRefresh = tick()
+        RefreshLog()
+    end
+end))
+
+-- Respawn handler
+AddConnection(LocalPlayer.CharacterAdded:Connect(function(newChar)
+    Character = newChar
+    Humanoid  = newChar:WaitForChild("Humanoid")
+    RootPart  = newChar:WaitForChild("HumanoidRootPart")
+    Humanoid.WalkSpeed = Settings.WalkSpeed
+    Humanoid.JumpPower = Settings.JumpPower
+    AddConnection(Humanoid.Died:Connect(function()
+        Stats.Deaths += 1
+        statLabels["s_deaths"].Text = tostring(Stats.Deaths)
+        AddLog("Character died", "err")
+        RefreshLog()
+    end))
+end))
+
+print("[NormalElevator] GUI loaded. Version 2.4.4")
