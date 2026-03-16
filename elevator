@@ -287,7 +287,7 @@ GameTitle.TextXAlignment         = Enum.TextXAlignment.Left
 GameTitle.Parent                 = Header
 
 local GameSub = Instance.new("TextLabel")
-GameSub.Text                   = "by NowDoTheHarlemShake · v2.4.4"
+GameSub.Text                   = "by NowDoTheHarlemShake · v1.0.0"
 GameSub.Font                   = Enum.Font.Code
 GameSub.TextSize               = 10
 GameSub.TextColor3             = Color3.fromRGB(74, 80, 104)
