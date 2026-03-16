@@ -940,4 +940,4 @@ AddConnection(LocalPlayer.CharacterAdded:Connect(function(newChar)
     end))
 end))
 
-print("[NormalElevator] GUI loaded. Version 2.4.4")
+print("[NormalElevator] GUI loaded. Version 1.0.0")
